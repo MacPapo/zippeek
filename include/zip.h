@@ -7,8 +7,9 @@
 /* CODES */
 #define ZIP_OK                 0
 #define ZIP_ERR_EOCD_NOT_FOUND 1
-#define ZIP_ERR_INVALID_SIG    2
-#define ZIP_ERR_MEM_ALLOC      3
+#define ZIP_ERR_EOCD_INVALID   2
+#define ZIP_ERR_INVALID_SIG    3
+#define ZIP_ERR_MEM_ALLOC      4
 
 /* SIGNATURES */
 #define CENTRAL_FILE_HEADER_SIGNATURE 0x02014b50

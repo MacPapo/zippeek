@@ -1,6 +1,9 @@
 #ifndef UTIL_H
 #define UTIL_H
 
-int has_zip_extension(const char* filename);
+#include <stdint.h>
+#include <string.h>
+
+int8_t has_zip_extension(const char* filename);
 
 #endif
