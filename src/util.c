@@ -17,6 +17,7 @@
  */
 
 #include "util.h"
+#include <stdio.h>
 
 int8_t
 has_zip_extension(const char* filename)

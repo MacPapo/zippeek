@@ -43,14 +43,18 @@ main(int argc, char* argv[])
         }
 
         uint32_t entry_count = 0;
-        struct ZipEntry* entries = NULL;
+        struct ZipEntry** entries = NULL;
         if (zip_read_directory(fd, &entries, &entry_count) != 0) {
                 close(fd);
+                zip_free_entries(&entries, entry_count);
                 exit(EXIT_FAILURE);
         }
 
         puts("EOP!");
 
         close(fd);
+        zip_free_entries(&entries, entry_count);
+        entries = NULL;
+
         return EXIT_SUCCESS;
 }

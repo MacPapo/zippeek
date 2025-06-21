@@ -54,6 +54,30 @@ struct LFH {
         char* field;
 };
 
+/* Central Directory File Header */
+struct CDFH {
+        uint32_t signature;
+        uint16_t version_made_by;
+        uint16_t version_needed;
+        uint16_t bit_flag;
+        uint16_t comp_method;
+        uint16_t last_mod_file_time;
+        uint16_t last_mod_file_date;
+        uint32_t crc32;
+        uint32_t comp_size;
+        uint32_t uncomp_size;
+        uint16_t file_name_len;
+        uint16_t extra_field_len;
+        uint16_t file_comment_len;
+        uint16_t disk_num_start;
+        uint16_t internal_file_attr;
+        uint32_t external_file_attr;
+        uint32_t local_header_offset;
+        char* file_name;
+        uint8_t* extra_field;
+        char* file_comment;
+};
+
 const char*
 get_zip_error_message(int code) {
     switch (code) {
@@ -88,6 +112,43 @@ get_zip_error_message(int code) {
         case ZIP_ERR_GENERIC: return "An unclassified generic error occurred";
         default: return "Unknown ZIP error code";
     }
+}
+
+static void
+free_cdfh_fields(struct CDFH* cdfh) {
+        if (!cdfh)
+                return;
+
+
+        if (cdfh->file_name) {
+                free(cdfh->file_name);
+                cdfh->file_name = NULL;
+        }
+
+        if (cdfh->extra_field) {
+                free(cdfh->extra_field);
+                cdfh->extra_field = NULL;
+        }
+
+        if (cdfh->file_comment) {
+                free(cdfh->file_comment);
+                cdfh->file_comment = NULL;
+        }
+}
+
+void
+print_buffer(const uint8_t* buf, const size_t size)
+{
+        for (size_t i = 0; i < size; ++i)
+                printf("[%02x]\n", buf[i]);
+}
+
+void
+print_eocd_comment(const struct EOCD* eocd)
+{
+        if (eocd->comment) {
+                printf("ZIP COMMENT: %s\n\n", eocd->comment);
+        }
 }
 
 uint8_t
@@ -212,16 +273,139 @@ read_eocd(const int_fast32_t fp, off_t eocd_pos, struct EOCD* eocd_out)
 }
 
 uint8_t
-zip_read_directory(const int_fast32_t fp, struct ZipEntry* entries[], uint32_t* entry_count)
+read_cdfh(const int_fast32_t fp, struct CDFH* cdfh_out)
+{
+        if (fp < 0)
+                return ZIP_ERR_BAD_FILE_DESC;
+
+        if (!cdfh_out)
+                return ZIP_ERR_INVALID_ARG;
+
+        cdfh_out->file_name = NULL;
+        cdfh_out->extra_field = NULL;
+        cdfh_out->file_comment = NULL;
+
+        uint8_t buf[CDFH_FIXED_SIZE];
+
+        ssize_t bytes_read = read(fp, buf, CDFH_FIXED_SIZE);
+        if (bytes_read != CDFH_FIXED_SIZE)
+                return ZIP_ERR_FILE_TRUNCATED;
+
+        cdfh_out->signature =
+                   (uint32_t)buf[0]
+                | ((uint32_t)buf[1] << 8)
+                | ((uint32_t)buf[2] << 16)
+                | ((uint32_t)buf[3] << 24);
+
+        if (cdfh_out->signature != CDFH_SIGNATURE)
+                return ZIP_ERR_EOCD_SIGNATURE_BAD;
+
+        cdfh_out->version_made_by = buf[4] | (buf[5] << 8);
+        cdfh_out->version_needed  = buf[6] | (buf[7] << 8);
+
+        cdfh_out->bit_flag = buf[8] | (buf[9] << 8);
+        cdfh_out->comp_method = buf[10] | (buf[11] << 8);
+
+        cdfh_out->last_mod_file_time = buf[12] | (buf[13] << 8);
+        cdfh_out->last_mod_file_date = buf[14] | (buf[15] << 8);
+
+        cdfh_out->crc32 =
+                   (uint32_t)buf[16]
+                | ((uint32_t)buf[17] << 8)
+                | ((uint32_t)buf[18] << 16)
+                | ((uint32_t)buf[19] << 24);
+
+        cdfh_out->comp_size =
+                   (uint32_t)buf[20]
+                | ((uint32_t)buf[21] << 8)
+                | ((uint32_t)buf[22] << 16)
+                | ((uint32_t)buf[23] << 24);
+
+        cdfh_out->uncomp_size =
+                   (uint32_t)buf[24]
+                | ((uint32_t)buf[25] << 8)
+                | ((uint32_t)buf[26] << 16)
+                | ((uint32_t)buf[27] << 24);
+
+        cdfh_out->file_name_len = buf[28] | (buf[29] << 8);
+        cdfh_out->extra_field_len = buf[30] | (buf[31] << 8);
+        cdfh_out->file_comment_len = buf[32] | (buf[33] << 8);
+        cdfh_out->disk_num_start = buf[34] | (buf[35] << 8);
+        cdfh_out->internal_file_attr = buf[36] | (buf[37] << 8);
+
+        cdfh_out->external_file_attr =
+                   (uint32_t)buf[38]
+                | ((uint32_t)buf[39] << 8)
+                | ((uint32_t)buf[40] << 16)
+                | ((uint32_t)buf[41] << 24);
+
+        cdfh_out->local_header_offset =
+                   (uint32_t)buf[42]
+                | ((uint32_t)buf[43] << 8)
+                | ((uint32_t)buf[44] << 16)
+                | ((uint32_t)buf[45] << 24);
+
+        if (cdfh_out->file_name_len > 0) {
+                cdfh_out->file_name = malloc(cdfh_out->file_name_len + 1);
+                if (!cdfh_out->file_name) {
+                        free_cdfh_fields(cdfh_out);
+                        return ZIP_ERR_MEM_ALLOC;
+                }
+
+                bytes_read = read(fp, cdfh_out->file_name, cdfh_out->file_name_len);
+                if (bytes_read != cdfh_out->file_name_len) {
+                        free_cdfh_fields(cdfh_out);
+
+                        return ZIP_ERR_FILE_TRUNCATED;
+                }
+                cdfh_out->file_name[cdfh_out->file_name_len] = '\0';
+        }
+
+        if (cdfh_out->extra_field_len > 0) {
+                cdfh_out->extra_field = malloc(cdfh_out->extra_field_len);
+                if (!cdfh_out->extra_field) {
+                        free_cdfh_fields(cdfh_out);
+
+                        return ZIP_ERR_MEM_ALLOC;
+                }
+
+                bytes_read = read(fp, cdfh_out->extra_field, cdfh_out->extra_field_len);
+                if (bytes_read != cdfh_out->extra_field_len) {
+                        free_cdfh_fields(cdfh_out);
+
+                        return ZIP_ERR_FILE_TRUNCATED;
+                }
+        }
+
+        if (cdfh_out->file_comment_len > 0) {
+                cdfh_out->file_comment = malloc(cdfh_out->file_comment_len + 1);
+                if (!cdfh_out->file_comment) {
+                        free_cdfh_fields(cdfh_out);
+                        return ZIP_ERR_MEM_ALLOC;
+                }
+
+                bytes_read = read(fp, cdfh_out->file_comment, cdfh_out->file_comment_len);
+                if (bytes_read != cdfh_out->file_comment_len) {
+                        free_cdfh_fields(cdfh_out);
+
+                        return ZIP_ERR_FILE_TRUNCATED;
+                }
+                cdfh_out->file_comment[cdfh_out->file_comment_len] = '\0';
+        }
+
+        /*
+         * print_buffer(buf, CDFH_FIXED_SIZE); /\* PRINT BUFFER DEBUG *\/
+         */
+
+        return ZIP_OK;
+}
+
+uint8_t
+zip_read_directory(const int_fast32_t fp, struct ZipEntry*** entries, uint32_t* entry_count)
 {
         if (fp < 0) {
                 fprintf(stderr, "Error: Invalid file descriptor provided.\n");
                 return ZIP_ERR_BAD_FILE_DESC;
-        }
-
-        if (!entries || !entry_count) {
-                fprintf(stderr, "Error: Invalid arguments (entries or entry_count) provided.\n");
-                return ZIP_ERR_INVALID_ARG;
         }
 
         off_t eocd_pos;
@@ -247,15 +431,61 @@ zip_read_directory(const int_fast32_t fp, struct ZipEntry* entries[], uint32_t* 
                         free(eocd.comment);
                         eocd.comment = NULL;
                 }
+
                 return (uint8_t)err;
         }
 
-        if (eocd.comment) {
-                printf("%s\n\n", eocd.comment);
+        print_eocd_comment(&eocd); /* PRINT COMMENT IF EXISTS */
 
-                free(eocd.comment);
-                eocd.comment = NULL;
+        *entry_count = eocd.total_entries;
+        *entries = calloc((*entry_count), sizeof(struct ZipEntry*));
+        if (!entries) {
+                fprintf(stderr, "Error: Memory allocation failed for ZIP entries array.\n");
+                return (uint8_t)ZIP_ERR_MEM_ALLOC;
         }
 
+        if (lseek(fp, eocd.central_dir_offset, SEEK_SET) == -1) {
+                fprintf(stderr, "Error seeking to Central Directory at offset %u: %s\n", eocd.central_dir_offset, strerror(errno));
+
+                return (uint8_t)ZIP_ERR_CENTRAL_DIR_LOC;
+        }
+
+        for (uint32_t i = 0; i < eocd.total_entries; ++i) {
+                struct CDFH cdfh;
+
+                cdfh.file_name = NULL;
+                cdfh.extra_field = NULL;
+                cdfh.file_comment = NULL;
+
+                err = read_cdfh(fp, &cdfh);
+                if (err != ZIP_OK) {
+                        fprintf(stderr, "Error reading Central Directory entry %u: %s\n", i, get_zip_error_message(err));
+                        if (err >= ZIP_ERR_IO_READ && err <= ZIP_ERR_FILE_TRUNCATED) {
+                                fprintf(stderr, "  System error details: %s\n", strerror(errno));
+                        }
+
+                        free_cdfh_fields(&cdfh);
+                        return (uint8_t)err;
+                }
+
+                printf("FNAME: %s\n", cdfh.file_name);
+                printf("FCOMM: %s\n", cdfh.file_comment);
+
+                free_cdfh_fields(&cdfh);
+        }
+
+        free(eocd.comment);
         return ZIP_OK;
+}
+
+void
+zip_free_entries(struct ZipEntry*** entries, const uint32_t entry_count)
+{
+        for (size_t i = 0; i < entry_count; ++i) {
+                if ((*entries)[i] != NULL)
+                        free((*entries)[i]);
+        }
+
+        free(*entries);
+        entries = NULL;
 }

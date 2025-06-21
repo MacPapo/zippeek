@@ -52,21 +52,24 @@
 
 /* SIGNATURES */
 #define EOCD_SIGNATURE 0x06054b50
-#define LFD_SIGNATURE  0x06054b50
-#define CFH_SIGNATURE  0x02014b50
 
 #define EOCD_MAX_COMMENT_LEN 0xFFFF
 #define EOCD_FIXED_SIZE      22
 
+#define CDFH_SIGNATURE  0x02014b50
+#define CDFH_FIXED_SIZE 46
+
+#define LFD_SIGNATURE  0x06054b50
+
 struct ZipEntry {
-        char* filename;
+        char* file_name;
         uint32_t compressed_size;
         uint32_t uncompressed_size;
         uint16_t compression_method;
         uint32_t local_header_offset;
 };
 
-uint8_t zip_read_directory(const int_fast32_t fp, struct ZipEntry* entries[], uint32_t* entry_count);
-void zip_free_entries(struct ZipEntry* entries, uint32_t entry_count);
+uint8_t zip_read_directory(const int_fast32_t fp, struct ZipEntry*** entries, uint32_t* entry_count);
+void zip_free_entries(struct ZipEntry*** entries, uint32_t entry_count);
 
 #endif
