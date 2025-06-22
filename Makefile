@@ -1,5 +1,5 @@
 CC?=gcc
-CFLAGS?=-Wall -Wextra -ggdb -pedantic -std=c17 -I${INCDIR}
+CFLAGS?=-Wall -Wextra -g -pedantic -std=c17 -I${INCDIR}
 LDFLAGS?=
 
 PREFIX?=.
@@ -8,7 +8,7 @@ SRCDIR=${PREFIX}/src
 
 PROG=zippeek
 
-SRCS!=find ${SRCDIR} -type f -name '*.c' | sort
+SRCS=$(shell find ${SRCDIR} -type f -name '*.c' | sort)
 OBJS=${SRCS:.c=.o}
 
 all: ${PROG}

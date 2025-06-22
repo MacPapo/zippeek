@@ -67,6 +67,8 @@ struct ZipEntry {
         uint32_t uncompressed_size;
         uint16_t compression_method;
         uint32_t local_header_offset;
+        uint32_t crc32;
+        uint16_t general_purpose_bit_flag;
 };
 
 uint8_t zip_read_directory(const int_fast32_t fp, struct ZipEntry*** entries, uint32_t* entry_count);

@@ -439,7 +439,7 @@ zip_read_directory(const int_fast32_t fp, struct ZipEntry*** entries, uint32_t* 
 
         *entry_count = eocd.total_entries;
         *entries = calloc((*entry_count), sizeof(struct ZipEntry*));
-        if (!entries) {
+        if (!(*entries)) {
                 fprintf(stderr, "Error: Memory allocation failed for ZIP entries array.\n");
                 return (uint8_t)ZIP_ERR_MEM_ALLOC;
         }
@@ -450,6 +450,7 @@ zip_read_directory(const int_fast32_t fp, struct ZipEntry*** entries, uint32_t* 
                 return (uint8_t)ZIP_ERR_CENTRAL_DIR_LOC;
         }
 
+        size_t k = 0;
         for (uint32_t i = 0; i < eocd.total_entries; ++i) {
                 struct CDFH cdfh;
 
@@ -468,10 +469,35 @@ zip_read_directory(const int_fast32_t fp, struct ZipEntry*** entries, uint32_t* 
                         return (uint8_t)err;
                 }
 
-                printf("FNAME: %s\n", cdfh.file_name);
-                printf("FCOMM: %s\n", cdfh.file_comment);
+                (*entries)[k] = malloc(sizeof(struct ZipEntry));
+                if (!(*entries)[k]) {
+                        fprintf(stderr, "Error: Memory allocation failed for ZipEntry %ld.\n", k);
+                        zip_free_entries(entries, *entry_count);
+                        free_cdfh_fields(&cdfh);
+
+                        return (uint8_t)ZIP_ERR_MEM_ALLOC;
+                }
+
+                (*entries)[k]->file_name = NULL;
+                (*entries)[k]->file_name = malloc(cdfh.file_name_len * sizeof(char) + 1);
+                if (!(*entries)[k]->file_name) {
+                    fprintf(stderr, "Error: Memory allocation failed for file name of entry %ld.\n", k);
+                    zip_free_entries(entries, *entry_count);
+                    free_cdfh_fields(&cdfh);
+
+                    return (uint8_t)ZIP_ERR_MEM_ALLOC;
+                }
+
+                strcpy((*entries)[k]->file_name, cdfh.file_name);
+                (*entries)[k]->compressed_size = cdfh.comp_size;
+                (*entries)[k]->uncompressed_size = cdfh.uncomp_size;
+                (*entries)[k]->compression_method = cdfh.comp_method;
+                (*entries)[k]->local_header_offset = cdfh.local_header_offset;
+                (*entries)[k]->crc32 = cdfh.crc32;
+                (*entries)[k]->general_purpose_bit_flag = cdfh.bit_flag;
 
                 free_cdfh_fields(&cdfh);
+                ++k;
         }
 
         free(eocd.comment);
@@ -482,8 +508,12 @@ void
 zip_free_entries(struct ZipEntry*** entries, const uint32_t entry_count)
 {
         for (size_t i = 0; i < entry_count; ++i) {
-                if ((*entries)[i] != NULL)
+                if ((*entries)[i] != NULL) {
+                        free((*entries)[i]->file_name);
+                        (*entries)[i]->file_name = NULL;
+
                         free((*entries)[i]);
+                }
         }
 
         free(*entries);

@@ -22,6 +22,22 @@
 #include <unistd.h>
 #include <stdlib.h>
 
+void
+print_metadata(const struct ZipEntry* entry)
+{
+        puts("--- ZIP METADATA ---");
+
+        printf("FILE NAME:\t\t\t%s\n", entry->file_name);
+        printf("COMPRESSION SIZE:\t\t%d\n", entry->compressed_size);
+        printf("UNCOMPRESSION SIZE:\t\t%d\n", entry->uncompressed_size);
+        printf("COMPRESSION METHOD:\t\t%u\n", entry->compression_method);
+        printf("LOCAL HEADER OFFSET:\t\t%d\n", entry->local_header_offset);
+        printf("CRC-32:\t\t\t\t%d\n", entry->crc32);
+        printf("GENERAL PUPROSE BIT FLAG:\t%d\n", entry->general_purpose_bit_flag);
+
+        puts("--- END OF ZIP METADATA ---");
+}
+
 int
 main(int argc, char* argv[])
 {
@@ -48,6 +64,13 @@ main(int argc, char* argv[])
                 close(fd);
                 zip_free_entries(&entries, entry_count);
                 exit(EXIT_FAILURE);
+        }
+
+        for (size_t i = 0; i < entry_count; ++i) {
+                if (entries[i] == NULL)
+                        continue;
+
+                print_metadata(entries[i]);
         }
 
         puts("EOP!");
