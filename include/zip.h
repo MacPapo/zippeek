@@ -12,14 +12,14 @@
 /*
  * System/Resource Errors (reflects underlying system call failures)
  */
-#define ZIP_ERR_IO_READ        1 /* Failed to read data from the file. */
-#define ZIP_ERR_IO_WRITE       2 /* Failed to write data to the file. */
-#define ZIP_ERR_IO_SEEK        3 /* Failed to change file offset (lseek error). */
-#define ZIP_ERR_MEM_ALLOC      4 /* Memory allocation failed (out of memory). */
-#define ZIP_ERR_INVALID_ARG    5 /* Invalid argument provided (e.g., NULL pointer). */
-#define ZIP_ERR_BAD_FILE_DESC  6 /* The provided file descriptor is invalid. */
-#define ZIP_ERR_FILE_TOO_SMALL 7 /* ZIP file too small for basic structures. */
-#define ZIP_ERR_FILE_TRUNCATED 8 /* An expected amount of data could not be read. */
+#define ZIP_ERR_IO_READ          1 /* Failed to read data from the file. */
+#define ZIP_ERR_IO_WRITE         2 /* Failed to write data to the file. */
+#define ZIP_ERR_IO_SEEK          3 /* Failed to change file offset (lseek error). */
+#define ZIP_ERR_MEM_ALLOC        4 /* Memory allocation failed (out of memory). */
+#define ZIP_ERR_INVALID_ARG      5 /* Invalid argument provided (e.g., NULL pointer). */
+#define ZIP_ERR_BAD_BUFFER       6 /* The provided file descriptor is invalid. */
+#define ZIP_ERR_BUFFER_TOO_SMALL 7 /* ZIP file too small for basic structures. */
+#define ZIP_ERR_BUFFER_TRUNCATED 8 /* An expected amount of data could not be read. */
 
 
 /*
@@ -71,7 +71,6 @@ struct ZipEntry {
         uint16_t general_purpose_bit_flag;
 };
 
-uint8_t zip_read_directory(const int_fast32_t fp, struct ZipEntry*** entries, uint32_t* entry_count);
-void zip_free_entries(struct ZipEntry*** entries, uint32_t entry_count);
+struct ZipEntry* zip_read_directory(const int_fast32_t fp, uint32_t* entry_count);
 
 #endif

@@ -17,12 +17,13 @@
  */
 
 #include "zip.h"
-#include <assert.h>
-#include <sys/types.h>
+#include <sys/mman.h>
+#include <sys/stat.h>
+#include <fcntl.h>
 #include <unistd.h>
 #include <errno.h>
-#include <string.h>
 #include <stdlib.h>
+#include <string.h>
 
 /* End of Central Directory */
 struct EOCD {
@@ -34,7 +35,6 @@ struct EOCD {
         uint32_t central_dir_size;
         uint32_t central_dir_offset;
         uint16_t comment_length;
-        char* comment;
 };
 
 /* Local File Header */
@@ -74,8 +74,6 @@ struct CDFH {
         uint32_t external_file_attr;
         uint32_t local_header_offset;
         char* file_name;
-        uint8_t* extra_field;
-        char* file_comment;
 };
 
 const char*
@@ -87,9 +85,9 @@ get_zip_error_message(int code) {
         case ZIP_ERR_IO_SEEK: return "Failed to change file offset";
         case ZIP_ERR_MEM_ALLOC: return "Memory allocation failed";
         case ZIP_ERR_INVALID_ARG: return "Invalid argument provided";
-        case ZIP_ERR_BAD_FILE_DESC: return "Bad file descriptor";
-        case ZIP_ERR_FILE_TOO_SMALL: return "ZIP file is too small or invalid";
-        case ZIP_ERR_FILE_TRUNCATED: return "File ended prematurely or incomplete read";
+        case ZIP_ERR_BAD_BUFFER: return "Bad file descriptor";
+        case ZIP_ERR_BUFFER_TOO_SMALL: return "ZIP file is too small or invalid";
+        case ZIP_ERR_BUFFER_TRUNCATED: return "File ended prematurely or incomplete read";
 
         case ZIP_ERR_EOCD_NOT_FOUND: return "End of Central Directory record not found";
         case ZIP_ERR_EOCD_SIGNATURE_BAD: return "Incorrect EOCD signature";
@@ -114,92 +112,42 @@ get_zip_error_message(int code) {
     }
 }
 
-static void
-free_cdfh_fields(struct CDFH* cdfh) {
-        if (!cdfh)
-                return;
-
-
-        if (cdfh->file_name) {
-                free(cdfh->file_name);
-                cdfh->file_name = NULL;
-        }
-
-        if (cdfh->extra_field) {
-                free(cdfh->extra_field);
-                cdfh->extra_field = NULL;
-        }
-
-        if (cdfh->file_comment) {
-                free(cdfh->file_comment);
-                cdfh->file_comment = NULL;
-        }
-}
-
-void
-print_buffer(const uint8_t* buf, const size_t size)
+static uint8_t
+find_eocd(const uint8_t* zip_buffer, size_t zip_size, off_t* eocd_pos_out)
 {
-        for (size_t i = 0; i < size; ++i)
-                printf("[%02x]\n", buf[i]);
-}
-
-void
-print_eocd_comment(const struct EOCD* eocd)
-{
-        if (eocd->comment) {
-                printf("ZIP COMMENT: %s\n\n", eocd->comment);
-        }
-}
-
-uint8_t
-find_eocd(const int_fast32_t fd, off_t* eocd_pos_out)
-{
-        if (fd < 0) {
-                return ZIP_ERR_BAD_FILE_DESC;
+        if (zip_buffer == NULL) {
+                return ZIP_ERR_BAD_BUFFER;
         }
 
         if (!eocd_pos_out) {
                 return ZIP_ERR_INVALID_ARG;
         }
 
-        off_t file_pos = lseek(fd, 0, SEEK_END);
-        if (file_pos == -1) {
-                return ZIP_ERR_IO_SEEK;
+
+        if (zip_size < EOCD_FIXED_SIZE) {
+                return ZIP_ERR_BUFFER_TOO_SMALL;
         }
 
-        if (file_pos < EOCD_FIXED_SIZE) {
-                return ZIP_ERR_FILE_TOO_SMALL;
+        off_t search_start_offset;
+        if (zip_size > (off_t)EOCD_FIXED_SIZE + EOCD_MAX_COMMENT_LEN) {
+                search_start_offset = zip_size - EOCD_FIXED_SIZE - EOCD_MAX_COMMENT_LEN;
+        } else {
+                search_start_offset = 0;
         }
 
-        off_t search_start = file_pos - EOCD_FIXED_SIZE - EOCD_MAX_COMMENT_LEN;
-        if (search_start < 0)
-                search_start = 0;
+        for (off_t i = zip_size - EOCD_FIXED_SIZE; i >= search_start_offset; --i) {
 
-        size_t read_size = file_pos - search_start;
-        if (read_size > EOCD_MAX_COMMENT_LEN + EOCD_FIXED_SIZE)
-                read_size = EOCD_MAX_COMMENT_LEN + EOCD_FIXED_SIZE;
+                if ((size_t)(i + 3) >= zip_size)
+                        continue;
 
-        uint8_t buf[EOCD_MAX_COMMENT_LEN + EOCD_FIXED_SIZE + 1];
-
-        if (lseek(fd, search_start, SEEK_SET) == -1)
-                return ZIP_ERR_IO_SEEK;
-
-        ssize_t bytes_read = read(fd, buf, read_size);
-        if (bytes_read < 0)
-                return ZIP_ERR_IO_READ;
-
-        if ((size_t)bytes_read < EOCD_FIXED_SIZE)
-                return ZIP_ERR_FILE_TRUNCATED;
-
-        for (off_t i = bytes_read - EOCD_FIXED_SIZE; i >= 0; --i) {
-                uint32_t sig =  (uint32_t)buf[i]             /* 0x00000050 */
-                             | ((uint32_t)buf[i + 1] << 8)   /* 0x00004b00 */
-                             | ((uint32_t)buf[i + 2] << 16)  /* 0x00050000 */
-                             | ((uint32_t)buf[i + 3] << 24); /* 0x06000000 */
+                uint32_t sig =  (uint32_t)zip_buffer[i]             /* 0x00000050 */
+                             | ((uint32_t)zip_buffer[i + 1] << 8)   /* 0x00004b00 */
+                             | ((uint32_t)zip_buffer[i + 2] << 16)  /* 0x00050000 */
+                             | ((uint32_t)zip_buffer[i + 3] << 24); /* 0x06000000 */
 
 
                 if (sig == EOCD_SIGNATURE) {
-                        *eocd_pos_out = search_start + i;
+                        *eocd_pos_out = i;
                         return ZIP_OK;
                 }
         }
@@ -207,315 +155,321 @@ find_eocd(const int_fast32_t fd, off_t* eocd_pos_out)
         return ZIP_ERR_EOCD_NOT_FOUND;
 }
 
-uint8_t
-read_eocd(const int_fast32_t fp, off_t eocd_pos, struct EOCD* eocd_out)
+static uint8_t
+read_eocd(const uint8_t* zip_buffer, const size_t zip_size, const off_t eocd_pos, struct EOCD* eocd_out)
 {
-        if (fp < 0)
-                return ZIP_ERR_BAD_FILE_DESC;
+        if (zip_buffer == NULL)
+                return ZIP_ERR_BAD_BUFFER;
 
-        if (!eocd_out)
+        if (eocd_out == NULL)
                 return ZIP_ERR_INVALID_ARG;
 
-        eocd_out->comment = NULL;
-        uint8_t buf[EOCD_FIXED_SIZE];
-        if (lseek(fp, eocd_pos, SEEK_SET) == -1)
-                return ZIP_ERR_IO_SEEK;
+        if (eocd_pos < 0 || (size_t)eocd_pos + EOCD_FIXED_SIZE > zip_size) {
+                return ZIP_ERR_BUFFER_TRUNCATED;
+        }
 
-        ssize_t bytes_read = read(fp, buf, EOCD_FIXED_SIZE);
-        if (bytes_read != EOCD_FIXED_SIZE)
-                return ZIP_ERR_FILE_TRUNCATED;
-
-        eocd_out->signature =
-                   (uint32_t)buf[0]
-                | ((uint32_t)buf[1] << 8)
-                | ((uint32_t)buf[2] << 16)
-                | ((uint32_t)buf[3] << 24);
+        const uint8_t* eocd_ptr = zip_buffer + eocd_pos;
+        eocd_out->signature =  (uint32_t)eocd_ptr[0]
+                            | ((uint32_t)eocd_ptr[1] << 8)
+                            | ((uint32_t)eocd_ptr[2] << 16)
+                            | ((uint32_t)eocd_ptr[3] << 24);
         if (eocd_out->signature != EOCD_SIGNATURE)
                 return ZIP_ERR_EOCD_SIGNATURE_BAD;
 
-        eocd_out->this_disk = buf[4] | (buf[5] << 8);
-        eocd_out->central_dir_disk = buf[6] | (buf[7] << 8);
-        eocd_out->total_entries_this_disk = buf[8] | (buf[9] << 8);
-        eocd_out->total_entries = buf[10] | (buf[11] << 8);
+        eocd_out->this_disk =  (uint16_t)eocd_ptr[4]
+                            | ((uint16_t)eocd_ptr[5] << 8);
 
-        eocd_out->central_dir_size =
-                   buf[12]
-                | (buf[13] << 8)
-                | (buf[14] << 16)
-                | (buf[15] << 24);
+        eocd_out->central_dir_disk =  (uint16_t)eocd_ptr[6]
+                                   | ((uint16_t)eocd_ptr[7] << 8);
 
-        eocd_out->central_dir_offset =
-                   buf[16]
-                | (buf[17] << 8)
-                | (buf[18] << 16)
-                | (buf[19] << 24);
+        eocd_out->total_entries_this_disk =  (uint16_t)eocd_ptr[8]
+                                          | ((uint16_t)eocd_ptr[9] << 8);
 
-        eocd_out->comment_length = buf[20] | (buf[21] << 8);
-        if (eocd_out->comment_length > 0) {
-                eocd_out->comment = malloc(eocd_out->comment_length + 1);
-                if (!eocd_out->comment) {
-                        return ZIP_ERR_MEM_ALLOC;
-                }
+        eocd_out->total_entries =  (uint16_t)eocd_ptr[10]
+                                | ((uint16_t)eocd_ptr[11] << 8);
 
-                bytes_read = read(fp, eocd_out->comment, eocd_out->comment_length);
-                if (bytes_read != eocd_out->comment_length) {
-                        free(eocd_out->comment);
-                        eocd_out->comment = NULL;
-                        return ZIP_ERR_FILE_TRUNCATED;
-                }
+        eocd_out->central_dir_size =  (uint32_t)eocd_ptr[12]
+                                   | ((uint32_t)eocd_ptr[13] << 8)
+                                   | ((uint32_t)eocd_ptr[14] << 16)
+                                   | ((uint32_t)eocd_ptr[15] << 24);
 
-                eocd_out->comment[eocd_out->comment_length] = '\0';
-        } else {
-                eocd_out->comment = NULL;
-        }
+        eocd_out->central_dir_offset =  (uint32_t)eocd_ptr[16]
+                                     | ((uint32_t)eocd_ptr[17] << 8)
+                                     | ((uint32_t)eocd_ptr[18] << 16)
+                                     | ((uint32_t)eocd_ptr[19] << 24);
+
+        eocd_out->comment_length =  (uint16_t)eocd_ptr[20]
+                                 | ((uint16_t)eocd_ptr[21] << 8);
 
         return ZIP_OK;
 }
 
-uint8_t
-read_cdfh(const int_fast32_t fp, struct CDFH* cdfh_out)
+static uint32_t
+fast_cdfh_va_params_sum(const uint8_t* zip_buffer, const size_t zip_size, const off_t cdfh_pos)
 {
-        if (fp < 0)
-                return ZIP_ERR_BAD_FILE_DESC;
+        if (zip_buffer == NULL)
+                return ZIP_ERR_BAD_BUFFER;
 
-        if (!cdfh_out)
+        if (cdfh_pos < 0 || (size_t)cdfh_pos + CDFH_FIXED_SIZE > zip_size) {
+                fprintf(stderr, "Error: CDFH position %ld is out of bounds or buffer is too small (size %zu) for fixed part in fast_cdfh_va_file_name.\n",
+                        (long)cdfh_pos, zip_size);
+                return ZIP_ERR_BAD_BUFFER;
+        }
+
+        const uint8_t* cdfh_ptr = zip_buffer + cdfh_pos;
+        const uint16_t file_name_len =  cdfh_ptr[28]
+                                     | (cdfh_ptr[29] << 8);
+
+        const uint16_t extra_field_len =  cdfh_ptr[30]
+                                       | (cdfh_ptr[31] << 8);
+
+        const uint16_t file_comment_len =  cdfh_ptr[32]
+                                        | (cdfh_ptr[33] << 8);
+
+        return file_name_len + extra_field_len + file_comment_len;
+}
+
+static uint16_t
+fast_cdfh_va_file_name(const uint8_t* zip_buffer, const size_t zip_size, const off_t cdfh_pos)
+{
+        if (zip_buffer == NULL)
+                return ZIP_ERR_BAD_BUFFER;
+
+        if (cdfh_pos < 0 || (size_t)cdfh_pos + CDFH_FIXED_SIZE > zip_size) {
+                fprintf(stderr, "Error: CDFH position %ld is out of bounds or buffer is too small (size %zu) for fixed part in fast_cdfh_va_file_name.\n",
+                        (long)cdfh_pos, zip_size);
+                return ZIP_ERR_BAD_BUFFER;
+        }
+
+        const uint8_t* cdfh_ptr = zip_buffer + cdfh_pos;
+        const uint16_t file_name_len =  cdfh_ptr[28]
+                                     | (cdfh_ptr[29] << 8);
+
+        return file_name_len;
+}
+
+static uint8_t
+read_cdfh(const uint8_t* zip_buffer, const size_t zip_size, const off_t cdfh_pos, struct CDFH* cdfh_out)
+{
+        if (zip_buffer == NULL)
+                return ZIP_ERR_BAD_BUFFER;
+
+        if (cdfh_out == NULL)
                 return ZIP_ERR_INVALID_ARG;
 
-        cdfh_out->file_name = NULL;
-        cdfh_out->extra_field = NULL;
-        cdfh_out->file_comment = NULL;
+        if (cdfh_pos < 0 || (size_t)cdfh_pos + CDFH_FIXED_SIZE > zip_size) {
+                return ZIP_ERR_BUFFER_TRUNCATED;
+        }
 
-        uint8_t buf[CDFH_FIXED_SIZE];
+        const uint8_t* cdfh_ptr = zip_buffer + cdfh_pos;
 
-        ssize_t bytes_read = read(fp, buf, CDFH_FIXED_SIZE);
-        if (bytes_read != CDFH_FIXED_SIZE)
-                return ZIP_ERR_FILE_TRUNCATED;
-
-        cdfh_out->signature =
-                   (uint32_t)buf[0]
-                | ((uint32_t)buf[1] << 8)
-                | ((uint32_t)buf[2] << 16)
-                | ((uint32_t)buf[3] << 24);
-
+        cdfh_out->file_name    = NULL;
+        cdfh_out->signature =  (uint32_t)cdfh_ptr[0]
+                            | ((uint32_t)cdfh_ptr[1] << 8)
+                            | ((uint32_t)cdfh_ptr[2] << 16)
+                            | ((uint32_t)cdfh_ptr[3] << 24);
         if (cdfh_out->signature != CDFH_SIGNATURE)
-                return ZIP_ERR_EOCD_SIGNATURE_BAD;
+                return ZIP_ERR_CD_ENTRY_SIGNATURE_BAD;
 
-        cdfh_out->version_made_by = buf[4] | (buf[5] << 8);
-        cdfh_out->version_needed  = buf[6] | (buf[7] << 8);
+        cdfh_out->version_made_by =  cdfh_ptr[4]
+                                  | (cdfh_ptr[5] << 8);
 
-        cdfh_out->bit_flag = buf[8] | (buf[9] << 8);
-        cdfh_out->comp_method = buf[10] | (buf[11] << 8);
+        cdfh_out->version_needed =  cdfh_ptr[6]
+                                 | (cdfh_ptr[7] << 8);
 
-        cdfh_out->last_mod_file_time = buf[12] | (buf[13] << 8);
-        cdfh_out->last_mod_file_date = buf[14] | (buf[15] << 8);
+        cdfh_out->bit_flag =  cdfh_ptr[8]
+                           | (cdfh_ptr[9] << 8);
 
-        cdfh_out->crc32 =
-                   (uint32_t)buf[16]
-                | ((uint32_t)buf[17] << 8)
-                | ((uint32_t)buf[18] << 16)
-                | ((uint32_t)buf[19] << 24);
+        cdfh_out->comp_method =  cdfh_ptr[10]
+                              | (cdfh_ptr[11] << 8);
 
-        cdfh_out->comp_size =
-                   (uint32_t)buf[20]
-                | ((uint32_t)buf[21] << 8)
-                | ((uint32_t)buf[22] << 16)
-                | ((uint32_t)buf[23] << 24);
+        cdfh_out->last_mod_file_time =  cdfh_ptr[12]
+                                     | (cdfh_ptr[13] << 8);
 
-        cdfh_out->uncomp_size =
-                   (uint32_t)buf[24]
-                | ((uint32_t)buf[25] << 8)
-                | ((uint32_t)buf[26] << 16)
-                | ((uint32_t)buf[27] << 24);
+        cdfh_out->last_mod_file_date =  cdfh_ptr[14]
+                                     | (cdfh_ptr[15] << 8);
 
-        cdfh_out->file_name_len = buf[28] | (buf[29] << 8);
-        cdfh_out->extra_field_len = buf[30] | (buf[31] << 8);
-        cdfh_out->file_comment_len = buf[32] | (buf[33] << 8);
-        cdfh_out->disk_num_start = buf[34] | (buf[35] << 8);
-        cdfh_out->internal_file_attr = buf[36] | (buf[37] << 8);
+        cdfh_out->crc32 =  (uint32_t)cdfh_ptr[16]
+                        | ((uint32_t)cdfh_ptr[17] << 8)
+                        | ((uint32_t)cdfh_ptr[18] << 16)
+                        | ((uint32_t)cdfh_ptr[19] << 24);
 
-        cdfh_out->external_file_attr =
-                   (uint32_t)buf[38]
-                | ((uint32_t)buf[39] << 8)
-                | ((uint32_t)buf[40] << 16)
-                | ((uint32_t)buf[41] << 24);
+        cdfh_out->comp_size =  (uint32_t)cdfh_ptr[20]
+                            | ((uint32_t)cdfh_ptr[21] << 8)
+                            | ((uint32_t)cdfh_ptr[22] << 16)
+                            | ((uint32_t)cdfh_ptr[23] << 24);
 
-        cdfh_out->local_header_offset =
-                   (uint32_t)buf[42]
-                | ((uint32_t)buf[43] << 8)
-                | ((uint32_t)buf[44] << 16)
-                | ((uint32_t)buf[45] << 24);
+        cdfh_out->uncomp_size =  (uint32_t)cdfh_ptr[24]
+                              | ((uint32_t)cdfh_ptr[25] << 8)
+                              | ((uint32_t)cdfh_ptr[26] << 16)
+                              | ((uint32_t)cdfh_ptr[27] << 24);
+
+        cdfh_out->file_name_len =  cdfh_ptr[28]
+                                | (cdfh_ptr[29] << 8);
+
+        cdfh_out->extra_field_len =  cdfh_ptr[30]
+                                  | (cdfh_ptr[31] << 8);
+
+        cdfh_out->file_comment_len =  cdfh_ptr[32]
+                                   | (cdfh_ptr[33] << 8);
+
+        cdfh_out->disk_num_start =  cdfh_ptr[34]
+                                 | (cdfh_ptr[35] << 8);
+
+        cdfh_out->internal_file_attr =  cdfh_ptr[36]
+                                     | (cdfh_ptr[37] << 8);
+
+        cdfh_out->external_file_attr =  (uint32_t)cdfh_ptr[38]
+                                     | ((uint32_t)cdfh_ptr[39] << 8)
+                                     | ((uint32_t)cdfh_ptr[40] << 16)
+                                     | ((uint32_t)cdfh_ptr[41] << 24);
+
+        cdfh_out->local_header_offset =  (uint32_t)cdfh_ptr[42]
+                                      | ((uint32_t)cdfh_ptr[43] << 8)
+                                      | ((uint32_t)cdfh_ptr[44] << 16)
+                                      | ((uint32_t)cdfh_ptr[45] << 24);
 
         if (cdfh_out->file_name_len > 0) {
+                const off_t file_name_offset = cdfh_pos + CDFH_FIXED_SIZE;
+                if ((size_t)file_name_offset + cdfh_out->file_name_len > zip_size)
+                        return ZIP_ERR_BUFFER_TRUNCATED;
+
                 cdfh_out->file_name = malloc(cdfh_out->file_name_len + 1);
-                if (!cdfh_out->file_name) {
-                        free_cdfh_fields(cdfh_out);
+                if (!cdfh_out->file_name)
                         return ZIP_ERR_MEM_ALLOC;
-                }
 
-                bytes_read = read(fp, cdfh_out->file_name, cdfh_out->file_name_len);
-                if (bytes_read != cdfh_out->file_name_len) {
-                        free_cdfh_fields(cdfh_out);
-
-                        return ZIP_ERR_FILE_TRUNCATED;
-                }
+                memcpy(cdfh_out->file_name, zip_buffer + file_name_offset, cdfh_out->file_name_len);
                 cdfh_out->file_name[cdfh_out->file_name_len] = '\0';
         }
 
-        if (cdfh_out->extra_field_len > 0) {
-                cdfh_out->extra_field = malloc(cdfh_out->extra_field_len);
-                if (!cdfh_out->extra_field) {
-                        free_cdfh_fields(cdfh_out);
-
-                        return ZIP_ERR_MEM_ALLOC;
-                }
-
-                bytes_read = read(fp, cdfh_out->extra_field, cdfh_out->extra_field_len);
-                if (bytes_read != cdfh_out->extra_field_len) {
-                        free_cdfh_fields(cdfh_out);
-
-                        return ZIP_ERR_FILE_TRUNCATED;
-                }
-        }
-
-        if (cdfh_out->file_comment_len > 0) {
-                cdfh_out->file_comment = malloc(cdfh_out->file_comment_len + 1);
-                if (!cdfh_out->file_comment) {
-                        free_cdfh_fields(cdfh_out);
-                        return ZIP_ERR_MEM_ALLOC;
-                }
-
-                bytes_read = read(fp, cdfh_out->file_comment, cdfh_out->file_comment_len);
-                if (bytes_read != cdfh_out->file_comment_len) {
-                        free_cdfh_fields(cdfh_out);
-
-                        return ZIP_ERR_FILE_TRUNCATED;
-                }
-                cdfh_out->file_comment[cdfh_out->file_comment_len] = '\0';
-        }
-
-        /*
-         * print_buffer(buf, CDFH_FIXED_SIZE); /\* PRINT BUFFER DEBUG *\/
-         */
-
         return ZIP_OK;
 }
 
-uint8_t
-zip_read_directory(const int_fast32_t fp, struct ZipEntry*** entries, uint32_t* entry_count)
+struct ZipEntry*
+zip_read_directory(const int_fast32_t fp, uint32_t* entry_count)
 {
-        if (fp < 0) {
+        if (fp < 0 || entry_count == NULL) {
                 fprintf(stderr, "Error: Invalid file descriptor provided.\n");
-                return ZIP_ERR_BAD_FILE_DESC;
+                return NULL;
         }
+
+        struct stat st;
+        if (fstat(fp, &st) == -1) {
+                perror("fstat");
+
+                return NULL;
+        }
+
+        off_t file_size = st.st_size;
+        if (file_size == 0) {
+                *entry_count = 0;
+
+                return NULL;
+        }
+
+        uint8_t* mapped_zip_file = (uint8_t*)mmap(NULL, file_size, PROT_READ, MAP_PRIVATE, fp, 0);
+        if (mapped_zip_file == MAP_FAILED) {
+                perror("mmap");
+
+                return NULL;
+        }
+        close(fp);
 
         off_t eocd_pos;
-        uint8_t err = find_eocd(fp, &eocd_pos);
+        uint8_t err = find_eocd(mapped_zip_file, file_size, &eocd_pos);
         if (err != ZIP_OK) {
                 fprintf(stderr, "Error finding EOCD: %s\n", get_zip_error_message(err));
-                if (err >= ZIP_ERR_IO_READ && err <= ZIP_ERR_FILE_TRUNCATED)
+                if (err >= ZIP_ERR_IO_READ && err <= ZIP_ERR_BUFFER_TRUNCATED)
                         fprintf(stderr, "  System error details: %s\n", strerror(errno));
 
-                return (uint8_t)err;
+                return NULL;
         }
 
-        struct EOCD eocd;
-        eocd.comment = NULL;
+         struct EOCD eocd;
+         err = read_eocd(mapped_zip_file, file_size, eocd_pos, &eocd);
+         if (err != ZIP_OK) {
+                 fprintf(stderr, "Error reading EOCD at offset %ld: %s\n", (long)eocd_pos, get_zip_error_message(err));
+                 if (err >= ZIP_ERR_IO_READ && err <= ZIP_ERR_BUFFER_TRUNCATED)
+                         fprintf(stderr, "  System error details: %s\n", strerror(errno));
 
-        err = read_eocd(fp, eocd_pos, &eocd);
-        if (err != ZIP_OK) {
-                fprintf(stderr, "Error reading EOCD at offset %ld: %s\n", (long)eocd_pos, get_zip_error_message(err));
-                if (err >= ZIP_ERR_IO_READ && err <= ZIP_ERR_FILE_TRUNCATED)
-                        fprintf(stderr, "  System error details: %s\n", strerror(errno));
+                 return NULL;
+         }
 
-                if (eocd.comment) {
-                        free(eocd.comment);
-                        eocd.comment = NULL;
-                }
+         *entry_count = eocd.total_entries;
+         if (*entry_count == 0) {
+                 munmap(mapped_zip_file, file_size);
+                 return NULL;
+         }
 
-                return (uint8_t)err;
-        }
+         size_t total_va_file_name_size = 0;
+         size_t total_zip_entries_size = (size_t)(*entry_count) * sizeof(struct ZipEntry);
 
-        print_eocd_comment(&eocd); /* PRINT COMMENT IF EXISTS */
+         off_t current_cdfh_offset = eocd.central_dir_offset;
+         for (uint32_t i = 0; i < *entry_count; ++i) {
+                 if (current_cdfh_offset < 0 || (size_t)current_cdfh_offset + CDFH_FIXED_SIZE > (size_t)file_size) {
+                         fprintf(stderr, "Error: Central Directory entry %u offset (%ld) is out of bounds or too small.\n", i, (long)current_cdfh_offset);
+                         munmap(mapped_zip_file, file_size);
+                         return NULL;
+                 }
 
-        *entry_count = eocd.total_entries;
-        *entries = calloc((*entry_count), sizeof(struct ZipEntry*));
-        if (!(*entries)) {
-                fprintf(stderr, "Error: Memory allocation failed for ZIP entries array.\n");
-                return (uint8_t)ZIP_ERR_MEM_ALLOC;
-        }
+                 uint32_t va_params_len = fast_cdfh_va_params_sum(mapped_zip_file, file_size, current_cdfh_offset);
+                 total_va_file_name_size += fast_cdfh_va_file_name(mapped_zip_file, file_size, current_cdfh_offset) + 1; /* Plus 1 for NULL terminator */
 
-        if (lseek(fp, eocd.central_dir_offset, SEEK_SET) == -1) {
-                fprintf(stderr, "Error seeking to Central Directory at offset %u: %s\n", eocd.central_dir_offset, strerror(errno));
+                 current_cdfh_offset += va_params_len + CDFH_FIXED_SIZE;
+                 if (current_cdfh_offset > eocd.central_dir_offset + eocd.central_dir_size) {
+                         fprintf(stderr, "Error: Central Directory parsing error, offset exceeds bounds.\n");
+                         munmap(mapped_zip_file, file_size);
+                         return NULL;
+                 }
+         }
 
-                return (uint8_t)ZIP_ERR_CENTRAL_DIR_LOC;
-        }
+         struct ZipEntry* entries = malloc(total_zip_entries_size + total_va_file_name_size);
+         if (!entries) {
+                 perror("malloc for zip entries and data");
+                 munmap(mapped_zip_file, file_size);
+                 return NULL;
+         }
 
-        size_t k = 0;
-        for (uint32_t i = 0; i < eocd.total_entries; ++i) {
-                struct CDFH cdfh;
+         current_cdfh_offset = eocd.central_dir_offset;
+         uint8_t* va_params_data_ptr = (uint8_t*)entries + total_zip_entries_size;
+         for (uint32_t i = 0; i < *entry_count; ++i) {
+                 struct CDFH cdfh;
+                 cdfh.file_name = NULL;
 
-                cdfh.file_name = NULL;
-                cdfh.extra_field = NULL;
-                cdfh.file_comment = NULL;
+                 err = read_cdfh(mapped_zip_file, file_size, current_cdfh_offset, &cdfh);
+                 if (err != ZIP_OK) {
+                         fprintf(stderr, "Error reading Central Directory entry %u: %s\n", i, get_zip_error_message(err));
+                         if (err >= ZIP_ERR_IO_READ && err <= ZIP_ERR_BUFFER_TRUNCATED) {
+                                 fprintf(stderr, "  System error details: %s\n", strerror(errno));
+                         }
 
-                err = read_cdfh(fp, &cdfh);
-                if (err != ZIP_OK) {
-                        fprintf(stderr, "Error reading Central Directory entry %u: %s\n", i, get_zip_error_message(err));
-                        if (err >= ZIP_ERR_IO_READ && err <= ZIP_ERR_FILE_TRUNCATED) {
-                                fprintf(stderr, "  System error details: %s\n", strerror(errno));
-                        }
+                         free(cdfh.file_name);
+                         cdfh.file_name = NULL;
 
-                        free_cdfh_fields(&cdfh);
-                        return (uint8_t)err;
-                }
+                         munmap(mapped_zip_file, file_size);
+                         return NULL;
+                 }
 
-                (*entries)[k] = malloc(sizeof(struct ZipEntry));
-                if (!(*entries)[k]) {
-                        fprintf(stderr, "Error: Memory allocation failed for ZipEntry %ld.\n", k);
-                        zip_free_entries(entries, *entry_count);
-                        free_cdfh_fields(&cdfh);
+                 entries[i].compressed_size          = cdfh.comp_size;
+                 entries[i].uncompressed_size        = cdfh.uncomp_size;
+                 entries[i].compression_method       = cdfh.comp_method;
+                 entries[i].local_header_offset      = cdfh.local_header_offset;
+                 entries[i].crc32                    = cdfh.crc32;
+                 entries[i].general_purpose_bit_flag = cdfh.bit_flag;
 
-                        return (uint8_t)ZIP_ERR_MEM_ALLOC;
-                }
+                 if (cdfh.file_name_len > 0) {
+                         entries[i].file_name = (char*)va_params_data_ptr;
+                         memcpy(entries[i].file_name, cdfh.file_name, cdfh.file_name_len);
+                         entries[i].file_name[cdfh.file_name_len] = '\0';
+                         va_params_data_ptr += cdfh.file_name_len + 1;
+                 }
 
-                (*entries)[k]->file_name = NULL;
-                (*entries)[k]->file_name = malloc(cdfh.file_name_len * sizeof(char) + 1);
-                if (!(*entries)[k]->file_name) {
-                    fprintf(stderr, "Error: Memory allocation failed for file name of entry %ld.\n", k);
-                    zip_free_entries(entries, *entry_count);
-                    free_cdfh_fields(&cdfh);
+                 free(cdfh.file_name);
+                 cdfh.file_name = NULL;
 
-                    return (uint8_t)ZIP_ERR_MEM_ALLOC;
-                }
+                 current_cdfh_offset += CDFH_FIXED_SIZE + cdfh.file_name_len + cdfh.extra_field_len + cdfh.file_comment_len;
+         }
 
-                strcpy((*entries)[k]->file_name, cdfh.file_name);
-                (*entries)[k]->compressed_size = cdfh.comp_size;
-                (*entries)[k]->uncompressed_size = cdfh.uncomp_size;
-                (*entries)[k]->compression_method = cdfh.comp_method;
-                (*entries)[k]->local_header_offset = cdfh.local_header_offset;
-                (*entries)[k]->crc32 = cdfh.crc32;
-                (*entries)[k]->general_purpose_bit_flag = cdfh.bit_flag;
-
-                free_cdfh_fields(&cdfh);
-                ++k;
-        }
-
-        free(eocd.comment);
-        return ZIP_OK;
-}
-
-void
-zip_free_entries(struct ZipEntry*** entries, const uint32_t entry_count)
-{
-        for (size_t i = 0; i < entry_count; ++i) {
-                if ((*entries)[i] != NULL) {
-                        free((*entries)[i]->file_name);
-                        (*entries)[i]->file_name = NULL;
-
-                        free((*entries)[i]);
-                }
-        }
-
-        free(*entries);
-        entries = NULL;
+         munmap(mapped_zip_file, file_size);
+         return entries;
 }

@@ -32,10 +32,10 @@ print_metadata(const struct ZipEntry* entry)
         printf("UNCOMPRESSION SIZE:\t\t%d\n", entry->uncompressed_size);
         printf("COMPRESSION METHOD:\t\t%u\n", entry->compression_method);
         printf("LOCAL HEADER OFFSET:\t\t%d\n", entry->local_header_offset);
-        printf("CRC-32:\t\t\t\t%d\n", entry->crc32);
+        printf("CRC-32:\t\t\t\t%u\n", entry->crc32);
         printf("GENERAL PUPROSE BIT FLAG:\t%d\n", entry->general_purpose_bit_flag);
 
-        puts("--- END OF ZIP METADATA ---");
+        puts("--- END OF ZIP METADATA ---\n");
 }
 
 int
@@ -59,24 +59,21 @@ main(int argc, char* argv[])
         }
 
         uint32_t entry_count = 0;
-        struct ZipEntry** entries = NULL;
-        if (zip_read_directory(fd, &entries, &entry_count) != 0) {
-                close(fd);
-                zip_free_entries(&entries, entry_count);
+        struct ZipEntry* entries = zip_read_directory(fd, &entry_count);
+        if (!entries) {
+                free(entries);
+                entries = NULL;
+
                 exit(EXIT_FAILURE);
         }
 
         for (size_t i = 0; i < entry_count; ++i) {
-                if (entries[i] == NULL)
-                        continue;
-
-                print_metadata(entries[i]);
+                print_metadata(&entries[i]);
         }
 
         puts("EOP!");
 
-        close(fd);
-        zip_free_entries(&entries, entry_count);
+        free(entries);
         entries = NULL;
 
         return EXIT_SUCCESS;
