@@ -4,73 +4,129 @@
 #include <stdint.h>
 #include <stdio.h>
 
-/* --- ZIP Library Error Codes --- */
-
-/* Success code */
-#define ZIP_OK 0
-
-/*
- * System/Resource Errors (reflects underlying system call failures)
- */
-#define ZIP_ERR_IO_READ          1 /* Failed to read data from the file. */
-#define ZIP_ERR_IO_WRITE         2 /* Failed to write data to the file. */
-#define ZIP_ERR_IO_SEEK          3 /* Failed to change file offset (lseek error). */
-#define ZIP_ERR_MEM_ALLOC        4 /* Memory allocation failed (out of memory). */
-#define ZIP_ERR_INVALID_ARG      5 /* Invalid argument provided (e.g., NULL pointer). */
-#define ZIP_ERR_BAD_BUFFER       6 /* The provided file descriptor is invalid. */
-#define ZIP_ERR_BUFFER_TOO_SMALL 7 /* ZIP file too small for basic structures. */
-#define ZIP_ERR_BUFFER_TRUNCATED 8 /* An expected amount of data could not be read. */
-
-
-/*
- * ZIP Format Specific Errors (related to parsing ZIP structures)
- */
-/* EOCD (End of Central Directory) related errors */
-#define ZIP_ERR_EOCD_NOT_FOUND           10 /* EOCD record (signature 0x06054b50) not found. */
-#define ZIP_ERR_EOCD_SIGNATURE_BAD       11 /* EOCD found, but its signature is incorrect. */
-#define ZIP_ERR_EOCD_CORRUPT_FIELDS      12 /* EOCD fields inconsistent or invalid. */
-
-/* Central Directory related errors */
-#define ZIP_ERR_CENTRAL_DIR_LOC        20 /* Failed to seek to Central Directory start. */
-#define ZIP_ERR_CENTRAL_DIR_READ       21 /* Failed to read Central Directory data. */
-#define ZIP_ERR_CENTRAL_DIR_CORRUPT    22 /* Central Directory contents malformed. */
-#define ZIP_ERR_CD_ENTRY_SIGNATURE_BAD 23 /* CD file header entry has incorrect signature. */
-#define ZIP_ERR_CD_ENTRY_CORRUPT       24 /* CD file header entry fields are corrupted. */
-
-/* Local File Header related errors */
-#define ZIP_ERR_LFH_LOC           30 /* Failed to seek to a Local File Header. */
-#define ZIP_ERR_LFH_READ          31 /* Failed to read a Local File Header. */
-#define ZIP_ERR_LFH_SIGNATURE_BAD 32 /* LFH has an incorrect signature. */
-#define ZIP_ERR_LFH_CORRUPT       33 /* LFH fields are corrupted. */
-
-/* Decompression/Compression related errors (for future expansion) */
-#define ZIP_ERR_COMPRESSION_UNSUPPORTED 50 /* Compression method not supported. */
-#define ZIP_ERR_DECOMPRESSION_FAILED    51 /* Decompression process failed. */
-
-/* Generic/Fallback error */
-#define ZIP_ERR_GENERIC        99 /* A general, unclassified error occurred. */
-
 /* SIGNATURES */
 #define EOCD_SIGNATURE 0x06054b50
 
 #define EOCD_MAX_COMMENT_LEN 0xFFFF
-#define EOCD_FIXED_SIZE      22
+#define EOCD_FIXED_SIZE 22
 
-#define CDFH_SIGNATURE  0x02014b50
+#define CDFH_SIGNATURE 0x02014b50
 #define CDFH_FIXED_SIZE 46
 
-#define LFD_SIGNATURE  0x06054b50
+#define LFD_SIGNATURE 0x06054b50
 
-struct ZipEntry {
-        char* file_name;
-        uint32_t compressed_size;
-        uint32_t uncompressed_size;
-        uint16_t compression_method;
-        uint32_t local_header_offset;
-        uint32_t crc32;
-        uint16_t general_purpose_bit_flag;
-};
+typedef struct ZipArchive ZipArchive;
 
-struct ZipEntry* zip_read_directory(const int_fast32_t fp, uint32_t* entry_count);
+/* Local File Header */
+typedef struct {
+	uint32_t signature; /* local file header signature 4 bytes (0x04034b50) */
+	uint16_t version_needed; /* version needed to extract 2 bytes */
+	uint16_t bit_flag; /* general purpose bit flag 2 bytes */
+	uint16_t comp_method; /* compression method 2 bytes */
+	uint16_t last_mod_file_time; /* last mod file time 2 bytes */
+	uint16_t last_mod_file_date; /* last mod file date 2 bytes */
+	uint32_t crc32; /* crc-32 4 bytes */
+	uint32_t comp_size; /* compressed size 4 bytes */
+	uint32_t uncomp_size; /* uncompressed size 4 bytes */
+	uint16_t file_name_len; /* file name length 2 bytes */
+	uint16_t extra_field_len; /* extra field length 2 bytes */
+	char *file_name; /* file name (variable size) */
+	char *extra_field; /* extra field (variable size) */
+} __attribute__((packed)) LFH;
+
+/* Central Directory File Header */
+typedef struct {
+	uint32_t signature; /* central file header signature 4 bytes (0x02014b50) */
+	uint16_t version; /* version made by 2 bytes */
+	uint16_t version_needed; /* version needed to extract 2 bytes */
+	uint16_t bit_flag; /* general purpose bit flag 2 bytes */
+	uint16_t comp_method; /* compression method 2 bytes */
+	uint16_t last_mod_file_time; /* last mod file time 2 bytes */
+	uint16_t last_mod_file_date; /* last mod file date 2 bytes */
+	uint32_t crc32; /* crc-32 4 bytes */
+	uint32_t comp_size; /* compressed size 4 bytes */
+	uint32_t uncomp_size; /* uncompressed size 4 bytes */
+	uint16_t file_name_len; /* file name length 2 bytes */
+	uint16_t extra_field_len; /* extra field length 2 bytes */
+	uint16_t file_comment_len; /* file comment length 2 bytes */
+	uint16_t disk_num_start; /* disk number start 2 bytes */
+	uint16_t internal_file_attr; /* internal file attributes 2 bytes */
+	uint32_t external_file_attr; /* external file attributes 4 bytes */
+	uint32_t local_header_offset; /* relative offset of local header 4 bytes */
+	char *file_name; /* file name (variable size) */
+	/* NOT IMPLEMENTED extra field (variable size) */
+	/* NOT IMPLEMENTED file comment (variable size) */
+} __attribute__((packed)) CDFH;
+
+/* Data Descriptor */
+typedef struct {
+	uint32_t crc32; /* crc-32 4 bytes */
+	uint32_t comp_size; /* compressed size 4 bytes */
+	uint32_t uncomp_size; /* uncompressed size 4 bytes */
+} __attribute__((packed)) DD;
+
+/* Zip64 end of central directory record */
+typedef struct {
+	uint32_t signature; /* zip64 end of central dir signature 4 bytes  (0x06064b50) */
+	uint64_t zip64_eocd_size; /* size of zip64 end of central directory record 8 bytes */
+	uint16_t version; /* version made by 2 bytes */
+	uint16_t version_needed; /* version needed to extract 2 bytes */
+	uint32_t this_disk; /* number of this disk 4 bytes */
+	uint32_t central_dir_disk; /* number of the disk with the start of the central directory 4 bytes */
+	uint64_t total_entries_this_disk; /* total number of entries in the central directory on this disk 8 bytes */
+	uint64_t total_entries; /* total number of entries in the central directory 8 bytes */
+	uint64_t central_dir_size; /* size of the central directory 8 bytes */
+	uint64_t central_dir_offset; /* offset of start of central directory with respect to the starting disk number 8 bytes */
+	/* NOT IMPLEMENTED zip64 extensible data sector (variable size) */
+} __attribute__((packed)) ZIP64EOCD;
+
+/* Zip64 end of central directory locator */
+typedef struct {
+	uint32_t signature; /* zip64 end of central dir locator signature 4 bytes  (0x07064b50) */
+	uint32_t zip64_eocd; /* number of the disk with the start of the zip64 end of central directory 4 bytes */
+	uint64_t zip64_eocd_offset; /* relative offset of the zip64 end of central directory record 8 bytes */
+	uint32_t total_entries; /* total number of disks 4 bytes */
+} __attribute__((packed)) ZIP64EOCDLOCATOR;
+
+/* End of Central Directory */
+typedef struct {
+	uint32_t signature; /* end of central dir signature 4 bytes  (0x06054b50) */
+	uint16_t this_disk; /* number of this disk 2 bytes */
+	uint16_t central_dir_disk; /* number of the disk with the start of the central directory 2 bytes */
+	uint16_t total_entries_this_disk; /* total number of entries in the central directory on this disk 2 bytes */
+	uint16_t total_entries; /* total number of entries in the central directory 2 bytes */
+	uint32_t central_dir_size; /* size of the central directory 4 bytes */
+	uint32_t central_dir_offset; /* offset of start of central directory with respect to the starting disk number 4 bytes */
+	uint16_t comment_length; /* .ZIP file comment length 2 bytes */
+	/* NOT IMPLEMENTED .ZIP file comment (variable size) */
+} __attribute__((packed)) EOCD;
+
+ZipArchive *zip_open_archive(const char *filename);
+void zip_close_archive(ZipArchive *archive);
+void zip_inspect_archive(ZipArchive *archive);
+int8_t find_eocd(FILE *fp, EOCD *eocd);
+
+static inline uint16_t read_u16(const unsigned char *buffer, size_t offset)
+{
+	return (uint16_t)buffer[offset] | ((uint16_t)buffer[offset + 1] << 8);
+}
+
+static inline uint32_t read_u32(const unsigned char *buffer, size_t offset)
+{
+	return (uint32_t)buffer[offset] | ((uint32_t)buffer[offset + 1] << 8) |
+	       ((uint32_t)buffer[offset + 2] << 16) |
+	       ((uint32_t)buffer[offset + 3] << 24);
+}
+
+static inline uint64_t read_u64(const unsigned char *buffer, size_t offset)
+{
+	return (uint64_t)buffer[offset] | ((uint64_t)buffer[offset + 1] << 8) |
+	       ((uint64_t)buffer[offset + 2] << 16) |
+	       ((uint64_t)buffer[offset + 3] << 24) |
+	       ((uint64_t)buffer[offset + 4] << 32) |
+	       ((uint64_t)buffer[offset + 5] << 40) |
+	       ((uint64_t)buffer[offset + 6] << 48) |
+	       ((uint64_t)buffer[offset + 7] << 56);
+}
 
 #endif

@@ -17,64 +17,25 @@
  */
 
 #include "zip.h"
-#include "util.h"
-#include <fcntl.h>
-#include <unistd.h>
+#include <stdio.h>
 #include <stdlib.h>
 
-void
-print_metadata(const struct ZipEntry* entry)
+int main(int argc, char *argv[])
 {
-        puts("--- ZIP METADATA ---");
+	if (argc != 2) {
+		fprintf(stderr, "Use: %s file.zip\n", argv[0]);
+		exit(EXIT_FAILURE);
+	}
 
-        printf("FILE NAME:\t\t\t%s\n", entry->file_name);
-        printf("COMPRESSION SIZE:\t\t%d\n", entry->compressed_size);
-        printf("UNCOMPRESSION SIZE:\t\t%d\n", entry->uncompressed_size);
-        printf("COMPRESSION METHOD:\t\t%u\n", entry->compression_method);
-        printf("LOCAL HEADER OFFSET:\t\t%d\n", entry->local_header_offset);
-        printf("CRC-32:\t\t\t\t%u\n", entry->crc32);
-        printf("GENERAL PUPROSE BIT FLAG:\t%d\n", entry->general_purpose_bit_flag);
+	const char *filename = argv[1];
+	ZipArchive *archive = zip_open_archive(filename);
+	if (archive == nullptr) {
+		exit(EXIT_FAILURE);
+	}
 
-        puts("--- END OF ZIP METADATA ---\n");
-}
+	zip_inspect_archive(archive);
 
-int
-main(int argc, char* argv[])
-{
-        if (argc != 2) {
-                fprintf(stderr, "Use: %s file.zip\n", argv[0]);
-                exit(EXIT_FAILURE);
-        }
+	zip_close_archive(archive);
 
-        const char* filename = argv[1];
-        if (!has_zip_extension(filename)) {
-                fprintf(stderr, "File must be a ZIP file\n");
-                exit(EXIT_FAILURE);
-        }
-
-        int_fast32_t fd = open(filename, O_RDONLY);
-        if (fd == -1) {
-                perror("OPEN");
-                exit(EXIT_FAILURE);
-        }
-
-        uint32_t entry_count = 0;
-        struct ZipEntry* entries = zip_read_directory(fd, &entry_count);
-        if (!entries) {
-                free(entries);
-                entries = NULL;
-
-                exit(EXIT_FAILURE);
-        }
-
-        for (size_t i = 0; i < entry_count; ++i) {
-                print_metadata(&entries[i]);
-        }
-
-        puts("EOP!");
-
-        free(entries);
-        entries = NULL;
-
-        return EXIT_SUCCESS;
+	return EXIT_SUCCESS;
 }
