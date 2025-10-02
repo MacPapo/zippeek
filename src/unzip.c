@@ -1,5 +1,5 @@
 /*
- * zip.c -- Zip Reader
+ * unzip.c -- Unzip Code
  * Copyright (C) 2025 Jacopo Costantini
  *
  * This program is free software: you can redistribute it and/or modify
@@ -16,10 +16,9 @@
  * along with this program.  If not, see <https://www.gnu.org/licenses/>.
  */
 
-#include "zip.h"
+#include "unzip.h"
 #include <stdio.h>
 #include <stdlib.h>
-#include <string.h>
 
 struct ZipArchive {
 	FILE *file_ptr;
@@ -29,61 +28,74 @@ struct ZipArchive {
 	uint64_t central_dir_size;
 };
 
-bool has_zip_extension(const char *filename)
+bool has_zip64_locator(FILE *fp)
 {
-	if (filename == nullptr)
+	if (fseek(fp, -(long)sizeof(ZIP64_EOCD_LOCATOR), SEEK_CUR) != 0) {
 		return false;
+	}
 
-	const char *ext = strrchr(filename, '.');
-	if (!ext || ext == filename)
+	unsigned char temp_buffer[4];
+	if (fread(temp_buffer, sizeof(temp_buffer), 1, fp) != 1) {
+		fseek(fp, sizeof(ZIP64_EOCD_LOCATOR) - sizeof(temp_buffer),
+		      SEEK_CUR);
 		return false;
+	}
 
-	return strcmp(ext, ".zip") == 0;
+	fseek(fp, sizeof(ZIP64_EOCD_LOCATOR) - sizeof(temp_buffer), SEEK_CUR);
+
+	return (read_u32(temp_buffer, 0) == ZIP64_EOCD_LOCATOR_SIGNATURE);
 }
 
-ZipArchive *zip_open_archive(const char *filename)
+ZipArchive *openzip(const char *filename)
 {
-	if (!has_zip_extension(filename))
-		return nullptr;
-
-	FILE* fp;
+	FILE *fp;
 	EOCD eocd;
 
 	fp = fopen(filename, "rb");
-	if (fp == nullptr)
-		return nullptr;
+	if (fp == NULL)
+		return NULL;
 
 	if (find_eocd(fp, &eocd) != 0) {
 		perror("FIND EOCD");
-		return nullptr;
+		return NULL;
 	}
 
 	ZipArchive *archive = malloc(sizeof(*archive));
-	if (archive == nullptr) {
-		return nullptr;
+	if (archive == NULL) {
+		return NULL;
 	}
 
 	archive->file_ptr = fp;
-	archive->entry_count = eocd.total_entries;
-	archive->central_dir_offset = eocd.central_dir_offset;
-	archive->central_dir_size = eocd.central_dir_size;
+	ZIP64_EOCD zip64_eocd;
+	int err;
+	if ((err = find_zip64_eocd(fp, &zip64_eocd)) == 0) {
+		archive->entry_count = zip64_eocd.total_entries;
+		archive->central_dir_offset = zip64_eocd.central_dir_offset;
+		archive->central_dir_size = zip64_eocd.central_dir_size;
 
+	} else {
+		archive->entry_count = eocd.total_entries;
+		archive->central_dir_offset = eocd.central_dir_offset;
+		archive->central_dir_size = eocd.central_dir_size;
+	}
+
+	rewind(fp);
 	return archive;
 }
 
-void zip_close_archive(ZipArchive *archive)
+void closezip(ZipArchive *archive)
 {
-	if (archive == nullptr)
+	if (archive == NULL)
 		return;
 
 	fclose(archive->file_ptr);
 	free(archive);
-	archive = nullptr;
+	archive = NULL;
 }
 
 int8_t find_eocd(FILE *fp, EOCD *eocd)
 {
-	if (fp == nullptr || eocd == nullptr)
+	if (fp == NULL || eocd == NULL)
 		return -1;
 
 	if (fseek(fp, 0, SEEK_END) != 0) {
@@ -116,71 +128,53 @@ int8_t find_eocd(FILE *fp, EOCD *eocd)
 			if (fread(eocd, sizeof(*eocd), 1, fp) != 1)
 				return -1;
 
-			rewind(fp);
 			return 0;
 		}
 	}
 
-	rewind(fp);
 	return -2;
+}
+
+int8_t find_zip64_eocd(FILE *fp, ZIP64_EOCD *eocd_out)
+{
+	if (fp == NULL || eocd_out == NULL)
+		return -1;
+
+	if (fseek(fp, -sizeof(ZIP64_EOCD_LOCATOR), SEEK_CUR) != 0)
+		return -1;
+
+	ZIP64_EOCD_LOCATOR locator;
+	if (fread(&locator, sizeof(locator), 1, fp) != 1)
+		return -1;
+
+	if (locator.signature != ZIP64_EOCD_LOCATOR_SIGNATURE)
+		return -2;
+
+	if (fseek(fp, locator.zip64_eocd_offset, SEEK_SET) != 0)
+		return -1;
+
+	uint32_t final_signature;
+	if (fread(&final_signature, sizeof(final_signature), 1, fp) != 1)
+		return -1;
+
+	if (final_signature != ZIP64_EOCD_SIGNATURE)
+		return -2;
+
+	if (fseek(fp, -sizeof(final_signature), SEEK_CUR) != 0)
+		return -1;
+
+	if (fread(eocd_out, sizeof(*eocd_out), 1, fp) != 1)
+		return -1;
+
+	return 0;
 }
 
 void zip_inspect_archive(ZipArchive *archive)
 {
-	printf("EC: %llu\tCDO: %llu\tCDS: %llu\n",
-	       archive->entry_count,
-	       archive->central_dir_offset,
+	printf("ZIP64: %d\tEC: %llu\tCDO: %llu\tCDS: %llu\n", archive->is_zip64,
+	       archive->entry_count, archive->central_dir_offset,
 	       archive->central_dir_size);
 }
-
-/* static uint8_t */
-/* read_eocd(const uint8_t* zip_buffer, const size_t zip_size, const off_t eocd_pos, struct EOCD* eocd_out) */
-/* { */
-/*         if (zip_buffer == NULL) */
-/*                 return ZIP_ERR_BAD_BUFFER; */
-
-/*         if (eocd_out == NULL) */
-/*                 return ZIP_ERR_INVALID_ARG; */
-
-/*         if (eocd_pos < 0 || (size_t)eocd_pos + EOCD_FIXED_SIZE > zip_size) { */
-/*                 return ZIP_ERR_BUFFER_TRUNCATED; */
-/*         } */
-
-/*         const uint8_t* eocd_ptr = zip_buffer + eocd_pos; */
-/*         eocd_out->signature =  (uint32_t)eocd_ptr[0] */
-/* 		| ((uint32_t)eocd_ptr[1] << 8) */
-/* 		| ((uint32_t)eocd_ptr[2] << 16) */
-/* 		| ((uint32_t)eocd_ptr[3] << 24); */
-/*         if (eocd_out->signature != EOCD_SIGNATURE) */
-/*                 return ZIP_ERR_EOCD_SIGNATURE_BAD; */
-
-/*         eocd_out->this_disk =  (uint16_t)eocd_ptr[4] */
-/* 		| ((uint16_t)eocd_ptr[5] << 8); */
-
-/*         eocd_out->central_dir_disk =  (uint16_t)eocd_ptr[6] */
-/* 		| ((uint16_t)eocd_ptr[7] << 8); */
-
-/*         eocd_out->total_entries_this_disk =  (uint16_t)eocd_ptr[8] */
-/* 		| ((uint16_t)eocd_ptr[9] << 8); */
-
-/*         eocd_out->total_entries =  (uint16_t)eocd_ptr[10] */
-/* 		| ((uint16_t)eocd_ptr[11] << 8); */
-
-/*         eocd_out->central_dir_size =  (uint32_t)eocd_ptr[12] */
-/* 		| ((uint32_t)eocd_ptr[13] << 8) */
-/* 		| ((uint32_t)eocd_ptr[14] << 16) */
-/* 		| ((uint32_t)eocd_ptr[15] << 24); */
-
-/*         eocd_out->central_dir_offset =  (uint32_t)eocd_ptr[16] */
-/* 		| ((uint32_t)eocd_ptr[17] << 8) */
-/* 		| ((uint32_t)eocd_ptr[18] << 16) */
-/* 		| ((uint32_t)eocd_ptr[19] << 24); */
-
-/*         eocd_out->comment_length =  (uint16_t)eocd_ptr[20] */
-/* 		| ((uint16_t)eocd_ptr[21] << 8); */
-
-/*         return ZIP_OK; */
-/* } */
 
 /* static uint32_t */
 /* fast_cdfh_va_params_sum(const uint8_t* zip_buffer, const size_t zip_size, const off_t cdfh_pos) */

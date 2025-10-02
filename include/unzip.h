@@ -6,6 +6,8 @@
 
 /* SIGNATURES */
 #define EOCD_SIGNATURE 0x06054b50
+#define ZIP64_EOCD_SIGNATURE 0x06064b50
+#define ZIP64_EOCD_LOCATOR_SIGNATURE 0x07064b50
 
 #define EOCD_MAX_COMMENT_LEN 0xFFFF
 #define EOCD_FIXED_SIZE 22
@@ -78,7 +80,7 @@ typedef struct {
 	uint64_t central_dir_size; /* size of the central directory 8 bytes */
 	uint64_t central_dir_offset; /* offset of start of central directory with respect to the starting disk number 8 bytes */
 	/* NOT IMPLEMENTED zip64 extensible data sector (variable size) */
-} __attribute__((packed)) ZIP64EOCD;
+} __attribute__((packed)) ZIP64_EOCD;
 
 /* Zip64 end of central directory locator */
 typedef struct {
@@ -86,7 +88,7 @@ typedef struct {
 	uint32_t zip64_eocd; /* number of the disk with the start of the zip64 end of central directory 4 bytes */
 	uint64_t zip64_eocd_offset; /* relative offset of the zip64 end of central directory record 8 bytes */
 	uint32_t total_entries; /* total number of disks 4 bytes */
-} __attribute__((packed)) ZIP64EOCDLOCATOR;
+} __attribute__((packed)) ZIP64_EOCD_LOCATOR;
 
 /* End of Central Directory */
 typedef struct {
@@ -101,10 +103,11 @@ typedef struct {
 	/* NOT IMPLEMENTED .ZIP file comment (variable size) */
 } __attribute__((packed)) EOCD;
 
-ZipArchive *zip_open_archive(const char *filename);
-void zip_close_archive(ZipArchive *archive);
+ZipArchive *openzip(const char *filename);
+void closezip(ZipArchive *archive);
 void zip_inspect_archive(ZipArchive *archive);
 int8_t find_eocd(FILE *fp, EOCD *eocd);
+int8_t find_zip64_eocd(FILE *fp, ZIP64_EOCD *eocd);
 
 static inline uint16_t read_u16(const unsigned char *buffer, size_t offset)
 {

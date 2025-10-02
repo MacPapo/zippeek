@@ -1,5 +1,5 @@
 /*
- * main.c -- Main Zipper
+ * main.c -- Main zipeek
  * Copyright (C) 2025 Jacopo Costantini
  *
  * This program is free software: you can redistribute it and/or modify
@@ -16,7 +16,7 @@
  * along with this program.  If not, see <https://www.gnu.org/licenses/>.
  */
 
-#include "zip.h"
+#include "unzip.h"
 #include <stdio.h>
 #include <stdlib.h>
 
@@ -27,15 +27,13 @@ int main(int argc, char *argv[])
 		exit(EXIT_FAILURE);
 	}
 
-	const char *filename = argv[1];
-	ZipArchive *archive = zip_open_archive(filename);
-	if (archive == nullptr) {
+	ZipArchive *archive;
+	if ((archive = openzip(argv[1])) == NULL)
 		exit(EXIT_FAILURE);
-	}
 
 	zip_inspect_archive(archive);
 
-	zip_close_archive(archive);
+	closezip(archive);
 
 	return EXIT_SUCCESS;
 }
